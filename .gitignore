@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+*.egg-info/
+dist/
+build/
+
+# whisper.cpp (large binaries and models)
+whisper.cpp/
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# uv
+uv.lock
+
+# Logs (optional - remove if you want to track)
+*.log
