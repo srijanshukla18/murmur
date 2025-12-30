@@ -1,8 +1,10 @@
 # Murmur
 
-**Live streaming voice-to-text for macOS** — speak and watch text appear in real-time, anywhere.
+**Live streaming voice-to-text for macOS (Apple Silicon only)** — speak and watch text appear in real-time, anywhere.
 
 Murmur uses [whisper.cpp](https://github.com/ggerganov/whisper.cpp) with Metal GPU acceleration via embedded Python bindings. Press a hotkey, speak, and watch your words appear live at the cursor. Press again to stop.
+
+> **Requires Apple Silicon** (M1/M2/M3/M4). Uses Metal GPU for ~60ms inference latency.
 
 ## Quick Start
 
@@ -109,7 +111,7 @@ uv sync
 
 ---
 
-## Usage
+## How to Use
 
 ```bash
 uv run murmur
@@ -124,13 +126,9 @@ uv run murmur
 
 ## Configuration
 
-Environment variables or `~/.config/murmur/config.toml`:
+Defaults live in `murmur.conf`. To override, copy it to `~/.config/murmur/murmur.conf` and edit values. All parameter explanations and tuning tips live as comments inside that file.
 
-```bash
-export MURMUR_HOTKEY="alt_r"     # alt_r, alt_l, f8, f9, f10, caps_lock
-export MURMUR_MODEL="base.en"   # tiny.en, base.en, small.en, medium.en
-export MURMUR_SOUND="true"      # true/false
-```
+Environment overrides are supported for `MURMUR_HOTKEY`, `MURMUR_MODEL`, and `MURMUR_SOUND`.
 
 ### Models
 
@@ -209,5 +207,12 @@ MIT
 
 ## Acknowledgments
 
-- [whisper.cpp](https://github.com/ggerganov/whisper.cpp) — Georgi Gerganov
-- [pywhispercpp](https://github.com/absadiki/pywhispercpp) — Python bindings
+- [whisper.cpp](https://github.com/ggerganov/whisper.cpp) — Georgi Gerganov's C++ port of Whisper
+- [OpenAI Whisper](https://github.com/openai/whisper) — The original speech recognition model
+- [pywhispercpp](https://github.com/absadiki/pywhispercpp) — Python bindings for whisper.cpp
+- [pynput](https://github.com/moses-palmer/pynput) — Global hotkey detection
+- [sounddevice](https://github.com/spatialaudio/python-sounddevice) — Audio capture
+- [PyObjC](https://github.com/ronaldoussoren/pyobjc) — macOS Quartz bindings for HID injection
+- [uv](https://github.com/astral-sh/uv) — Fast Python package manager
+
+All dependencies are MIT licensed.

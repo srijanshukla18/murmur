@@ -25,17 +25,23 @@ class StreamingResult:
 class StreamingTranscriber:
     """Embedded streaming transcriber using pywhispercpp."""
 
-    # Stability rules
-    STABILITY_COUNT = 2       # Passes before text is committed
-    SILENCE_COMMIT_MS = 600   # Commit after this much silence
-
     def __init__(
         self,
         model_path: Path,
+        stability_count: int = 2,
+        silence_commit_ms: int = 600,
+        prompt_max_words: int = 50,
+        overlap_max_words: int = 20,
+        min_audio_seconds: float = 0.1,
         on_update: Optional[Callable[[StreamingResult], None]] = None,
     ):
         self.model_path = model_path
         self._on_update = on_update
+        self._stability_count_required = stability_count
+        self._silence_commit_seconds = silence_commit_ms / 1000.0
+        self._prompt_max_words = prompt_max_words
+        self._overlap_max_words = overlap_max_words
+        self._min_audio_samples = max(1, int(16000 * min_audio_seconds))
 
         # Load model once, keep in memory
         log.info(f"Loading whisper model: {model_path}")
@@ -77,16 +83,17 @@ class StreamingTranscriber:
             silence_duration: Current silence duration in seconds
             is_final: True for final pass after recording stops
         """
-        if audio is None or len(audio) < 1600:  # <0.1s
+        if audio is None or len(audio) < self._min_audio_samples:
             return None
 
         # Run inference with prompt for continuity
         text = self._transcribe(audio)
-        if text is None:
-            return None
 
+        # Even if Whisper returns nothing (silence), we must run stability update
+        # to allow for silence-based commits of previously pending text.
         with self._lock:
-            return self._update_stability(text, silence_duration, is_final)
+            text_to_process = text if text is not None else self._committed_text
+            return self._update_stability(text_to_process, silence_duration, is_final)
 
     def _transcribe(self, audio: np.ndarray) -> Optional[str]:
         """Run whisper inference on audio."""
@@ -95,7 +102,7 @@ class StreamingTranscriber:
             prompt = None
             with self._lock:
                 if self._committed_text:
-                    words = self._committed_text.split()[-50:]
+                    words = self._committed_text.split()[-self._prompt_max_words:]
                     prompt = " ".join(words)
 
             # Transcribe with callback for segments
@@ -133,55 +140,45 @@ class StreamingTranscriber:
     ) -> StreamingResult:
         """Update committed/pending text based on stability rules."""
         new_text = new_text.strip()
+        merged_text = self._merge_with_committed(self._committed_text, new_text)
 
         # Final pass: commit everything
         if is_final:
-            self._committed_text = new_text
+            self._committed_text = merged_text
             self._pending_text = ""
             return StreamingResult(
                 committed_text=self._committed_text,
                 pending_text="",
-                full_text=new_text,
+                full_text=self._committed_text,
                 is_final=True,
             )
 
         # Check stability
-        if new_text == self._last_full_text:
+        if merged_text == self._last_full_text:
             self._stability_count += 1
         else:
             self._stability_count = 0
-        self._last_full_text = new_text
+        self._last_full_text = merged_text
 
         # Determine what to commit
         should_commit = (
-            self._stability_count >= self.STABILITY_COUNT
-            or silence_duration >= (self.SILENCE_COMMIT_MS / 1000.0)
+            self._stability_count >= self._stability_count_required
+            or silence_duration >= self._silence_commit_seconds
         )
 
-        if should_commit and new_text:
-            if new_text.startswith(self._committed_text):
-                self._committed_text = new_text
-                self._pending_text = ""
-            elif self._committed_text and new_text != self._committed_text:
-                common = self._find_common_prefix(self._committed_text, new_text)
-                if len(common) >= len(self._committed_text) * 0.8:
-                    self._committed_text = new_text
-                    self._pending_text = ""
-                else:
-                    self._pending_text = new_text[len(self._committed_text):].strip()
-            else:
-                self._committed_text = new_text
-                self._pending_text = ""
+        if should_commit and merged_text:
+            self._committed_text = merged_text
+            self._pending_text = ""
         else:
-            if new_text.startswith(self._committed_text):
-                self._pending_text = new_text[len(self._committed_text):].strip()
+            if merged_text.startswith(self._committed_text):
+                self._pending_text = merged_text[len(self._committed_text):].strip()
             else:
-                self._pending_text = new_text
+                self._pending_text = merged_text
 
         result = StreamingResult(
             committed_text=self._committed_text,
             pending_text=self._pending_text,
-            full_text=new_text,
+            full_text=merged_text,
             is_final=False,
         )
 
@@ -190,17 +187,25 @@ class StreamingTranscriber:
 
         return result
 
-    def _find_common_prefix(self, s1: str, s2: str) -> str:
-        """Find common prefix between two strings, word-aligned."""
-        words1 = s1.split()
-        words2 = s2.split()
-        common = []
-        for w1, w2 in zip(words1, words2):
-            if w1 == w2:
-                common.append(w1)
-            else:
-                break
-        return " ".join(common)
+    def _merge_with_committed(self, committed: str, new_text: str) -> str:
+        """Merge new text with committed prefix using word overlap."""
+        if not committed:
+            return new_text
+        if not new_text:
+            return committed
+        if new_text.startswith(committed):
+            return new_text
+
+        committed_words = committed.split()
+        new_words = new_text.split()
+        max_overlap = min(self._overlap_max_words, len(committed_words), len(new_words))
+
+        for overlap in range(max_overlap, 0, -1):
+            if committed_words[-overlap:] == new_words[:overlap]:
+                merged_words = committed_words + new_words[overlap:]
+                return " ".join(merged_words)
+
+        return f"{committed} {new_text}".strip()
 
     def _clean_output(self, text: str) -> Optional[str]:
         """Clean whisper output."""

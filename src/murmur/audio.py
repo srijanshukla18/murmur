@@ -98,6 +98,11 @@ class VAD:
         self._last_speech_time = 0.0
         self._is_speaking = False
 
+    @property
+    def is_speaking(self) -> bool:
+        """Whether speech is currently detected."""
+        return self._is_speaking
+
 
 class StreamingRecorder:
     """Records audio with ring buffer for live streaming transcription."""
@@ -109,15 +114,22 @@ class StreamingRecorder:
         self,
         buffer_seconds: float = 12.0,
         vad_threshold: float = 0.01,
+        vad_speech_pad_ms: int = 300,
+        audio_chunk_ms: int = 100,
         on_audio_chunk: Optional[Callable[[np.ndarray], None]] = None,
     ):
         self.ring_buffer = RingBuffer(buffer_seconds, self.SAMPLE_RATE)
-        self.vad = VAD(threshold=vad_threshold, sample_rate=self.SAMPLE_RATE)
+        self.vad = VAD(
+            threshold=vad_threshold,
+            speech_pad_ms=vad_speech_pad_ms,
+            sample_rate=self.SAMPLE_RATE,
+        )
         self._on_audio_chunk = on_audio_chunk
         self._recording = False
         self._stream: Optional[sd.InputStream] = None
         self._lock = threading.Lock()
         self._full_buffer: list[np.ndarray] = []  # Keep all audio for final pass
+        self._audio_chunk_ms = audio_chunk_ms
 
     def start(self) -> None:
         """Start streaming audio capture."""
@@ -133,7 +145,9 @@ class StreamingRecorder:
                 channels=self.CHANNELS,
                 dtype=np.float32,
                 callback=self._audio_callback,
-                blocksize=int(self.SAMPLE_RATE * 0.1),  # 100ms chunks
+                blocksize=max(
+                    1, int(self.SAMPLE_RATE * (self._audio_chunk_ms / 1000.0))
+                ),
             )
             self._stream.start()
 
@@ -163,7 +177,7 @@ class StreamingRecorder:
 
     def is_speech_active(self) -> bool:
         """Check if speech is currently detected."""
-        return self.vad._is_speaking
+        return self.vad.is_speaking
 
     def silence_duration(self) -> float:
         """Get duration of current silence."""

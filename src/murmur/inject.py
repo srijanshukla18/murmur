@@ -16,16 +16,21 @@ from Quartz import (
 class StreamingInjector:
     """Diff-based text injector for live streaming transcription."""
 
-    # Throttle: max updates per second
-    MAX_UPDATES_PER_SEC = 4
-    KEYSTROKE_DELAY = 0.002
-    BACKSPACE_DELAY = 0.001
-
-    def __init__(self):
+    def __init__(
+        self,
+        max_updates_per_sec: int = 4,
+        max_backspace_chars: int = 30,
+        keystroke_delay_seconds: float = 0.002,
+        backspace_delay_seconds: float = 0.001,
+    ):
         self._source = CGEventSourceCreate(kCGEventSourceStateHIDSystemState)
         self._typed_text = ""
         self._last_update_time = 0.0
         self._lock = threading.Lock()
+        self._max_updates_per_sec = max(1, max_updates_per_sec)
+        self._max_backspace_chars = max(0, max_backspace_chars)
+        self._keystroke_delay = keystroke_delay_seconds
+        self._backspace_delay = backspace_delay_seconds
 
     def reset(self) -> None:
         """Reset state for new session."""
@@ -50,28 +55,36 @@ class StreamingInjector:
         with self._lock:
             # Throttle check
             now = time.time()
-            if not force and (now - self._last_update_time) < (1.0 / self.MAX_UPDATES_PER_SEC):
+            if not force and (now - self._last_update_time) < (1.0 / self._max_updates_per_sec):
                 return False
-
-            self._last_update_time = now
 
             # Compute diff
             old_text = self._typed_text
             if old_text == new_text:
                 return False
 
-            # Find common prefix length
+            prefix_keep = ""
+            old_tail = old_text
+            new_tail = new_text
+            if self._max_backspace_chars is not None and len(old_text) > self._max_backspace_chars:
+                prefix_keep = old_text[:-self._max_backspace_chars]
+                if not new_text.startswith(prefix_keep):
+                    return False
+                old_tail = old_text[len(prefix_keep):]
+                new_tail = new_text[len(prefix_keep):]
+
+            # Find common prefix length in the editable tail
             common_len = 0
-            for i, (c1, c2) in enumerate(zip(old_text, new_text)):
+            for i, (c1, c2) in enumerate(zip(old_tail, new_tail)):
                 if c1 == c2:
                     common_len = i + 1
                 else:
                     break
 
-            # How many chars to delete from old
-            delete_count = len(old_text) - common_len
+            # How many chars to delete from tail
+            delete_count = len(old_tail) - common_len
             # What to type
-            suffix = new_text[common_len:]
+            suffix = new_tail[common_len:]
 
             # Send backspaces
             if delete_count > 0:
@@ -81,7 +94,8 @@ class StreamingInjector:
             if suffix:
                 self._type_text(suffix)
 
-            self._typed_text = new_text
+            self._last_update_time = now
+            self._typed_text = prefix_keep + new_tail
             return True
 
     def _send_backspaces(self, count: int) -> None:
@@ -92,7 +106,7 @@ class StreamingInjector:
             key_up = CGEventCreateKeyboardEvent(self._source, 51, False)
             CGEventPost(kCGHIDEventTap, key_down)
             CGEventPost(kCGHIDEventTap, key_up)
-            time.sleep(self.BACKSPACE_DELAY)
+            time.sleep(self._backspace_delay)
 
     def _type_text(self, text: str) -> None:
         """Type text characters."""
@@ -103,11 +117,10 @@ class StreamingInjector:
             CGEventKeyboardSetUnicodeString(key_up, len(char), char)
             CGEventPost(kCGHIDEventTap, key_down)
             CGEventPost(kCGHIDEventTap, key_up)
-            time.sleep(self.KEYSTROKE_DELAY)
+            time.sleep(self._keystroke_delay)
 
     @property
     def typed_text(self) -> str:
         """Get currently typed text."""
         with self._lock:
             return self._typed_text
-

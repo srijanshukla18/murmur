@@ -31,24 +31,29 @@ SOUNDS = {
     "error": "/System/Library/Sounds/Basso.aiff",
 }
 
+
 class MurmurApp:
     """Murmur live streaming application."""
-
-    # Streaming config
-    INFERENCE_INTERVAL = 0.5  # Run inference every 500ms
-    AUDIO_WINDOW = 10.0       # Use last 10s of audio for inference
 
     def __init__(self, config: Config):
         self.config = config
         self.state = State.LOADING
         self._last_toggle_time = 0
+        self._min_audio_samples = max(1, int(16000 * self.config.min_audio_seconds))
 
         # Initialize audio/injection (fast)
         self.streaming_recorder = StreamingRecorder(
-            buffer_seconds=12.0,
-            vad_threshold=0.01,
+            buffer_seconds=self.config.buffer_seconds,
+            vad_threshold=self.config.vad_threshold,
+            vad_speech_pad_ms=self.config.vad_speech_pad_ms,
+            audio_chunk_ms=self.config.audio_chunk_ms,
         )
-        self.streaming_injector = StreamingInjector()
+        self.streaming_injector = StreamingInjector(
+            max_updates_per_sec=self.config.max_updates_per_sec,
+            max_backspace_chars=self.config.max_backspace_chars,
+            keystroke_delay_seconds=self.config.keystroke_delay_seconds,
+            backspace_delay_seconds=self.config.backspace_delay_seconds,
+        )
 
         # Transcriber loaded async (slow - model load)
         self.streaming_transcriber: StreamingTranscriber | None = None
@@ -63,7 +68,14 @@ class MurmurApp:
         # Load model in background thread
         def load_model():
             try:
-                transcriber = StreamingTranscriber(model_path=config.model_path)
+                transcriber = StreamingTranscriber(
+                    model_path=config.model_path,
+                    stability_count=config.stability_count,
+                    silence_commit_ms=config.silence_commit_ms,
+                    prompt_max_words=config.prompt_max_words,
+                    overlap_max_words=config.overlap_max_words,
+                    min_audio_seconds=config.min_audio_seconds,
+                )
                 self._on_model_loaded(transcriber)
             except Exception as e:
                 log.error(f"Model load failed: {e}")
@@ -125,7 +137,7 @@ class MurmurApp:
         """Toggle between idle and live streaming states."""
         # Debounce: ignore rapid key repeats (200ms minimum)
         now = time.time()
-        if now - self._last_toggle_time < 0.2:
+        if now - self._last_toggle_time < self.config.toggle_debounce_seconds:
             log.debug(f"Toggle ignored (debounce: {now - self._last_toggle_time:.3f}s)")
             return
 
@@ -177,7 +189,7 @@ class MurmurApp:
         # Get full audio for final pass (as numpy)
         full_audio = self.streaming_recorder.stop(as_numpy=True)
 
-        if len(full_audio) > 1600:  # >0.1s of audio
+        if len(full_audio) > self._min_audio_samples:
             # Run final transcription on full audio
             def final_transcribe():
                 try:
@@ -204,12 +216,20 @@ class MurmurApp:
             now = time.time()
 
             # Check if it's time for inference
-            if now - last_inference >= self.INFERENCE_INTERVAL:
-                # Only run inference if there's speech activity or buffer has content
-                if self.streaming_recorder.is_speech_active() or self.streaming_recorder.buffer_duration > 1.0:
-                    audio = self.streaming_recorder.get_audio_window(self.AUDIO_WINDOW)
+            if now - last_inference >= self.config.inference_interval_seconds:
+                # Run inference if:
+                # 1. User is speaking (VAD active)
+                # 2. OR there is text waiting to be committed (to catch ends of sentences)
+                # 3. OR the buffer is getting full (cleanup)
+                is_speaking = self.streaming_recorder.is_speech_active()
+                has_pending = self.streaming_transcriber.pending_text != ""
 
-                    if len(audio) > 1600:  # >0.1s of audio
+                if is_speaking or has_pending or self.streaming_recorder.buffer_duration > self.config.audio_window_seconds:
+                    audio = self.streaming_recorder.get_audio_window(
+                        self.config.audio_window_seconds
+                    )
+
+                    if len(audio) > self._min_audio_samples:
                         silence = self.streaming_recorder.silence_duration()
                         result = self.streaming_transcriber.process_audio(
                             audio,
@@ -217,7 +237,7 @@ class MurmurApp:
                             is_final=False,
                         )
 
-                        if result and result.full_text:
+                        if result:
                             self._on_streaming_update(result)
 
                 last_inference = now
