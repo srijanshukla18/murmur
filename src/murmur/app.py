@@ -10,27 +10,29 @@ import rumps
 from pynput import keyboard
 from PyObjCTools import AppHelper
 
-from .audio import AudioRecorder
+from .audio import StreamingRecorder
 from .config import Config
-from .inject import TextInjector
+from .inject import StreamingInjector
 from .logger import log
 from .notify import notify
-from .transcribe import Transcriber
+from .transcribe import StreamingTranscriber, StreamingResult
 
 
 class State(Enum):
     """Application states."""
 
+    LOADING = "loading"
     IDLE = "idle"
-    RECORDING = "recording"
     TRANSCRIBING = "transcribing"
+    LIVE = "live"
 
 
 # Menu bar icons for each state
 ICONS = {
+    State.LOADING: "⏳",
     State.IDLE: "🎤",
-    State.RECORDING: "🔴",
     State.TRANSCRIBING: "⏳",
+    State.LIVE: "🔴",
 }
 
 # macOS system sounds
@@ -40,43 +42,72 @@ SOUNDS = {
     "error": "/System/Library/Sounds/Basso.aiff",
 }
 
-# Timeout for transcription (seconds)
-TRANSCRIPTION_TIMEOUT = 45
-
-
 class MurmurApp(rumps.App):
     """Murmur menu bar application."""
+
+    # Streaming config
+    INFERENCE_INTERVAL = 0.5  # Run inference every 500ms
+    AUDIO_WINDOW = 10.0       # Use last 10s of audio for inference
 
     def __init__(self, config: Config):
         super().__init__("Murmur", quit_button=None)
 
         self.config = config
-        self.state = State.IDLE
-        self.title = ICONS[State.IDLE]
+        self.state = State.LOADING
+        self.title = ICONS[State.LOADING]
         self._transcription_start_time = 0
         self._last_toggle_time = 0
 
-        # Initialize components
-        self.recorder = AudioRecorder()
-        self.transcriber = Transcriber(
-            config.whisper_binary,
-            config.model_path,
+        # Initialize audio/injection (fast)
+        self.streaming_recorder = StreamingRecorder(
+            buffer_seconds=12.0,
+            vad_threshold=0.01,
         )
-        self.injector = TextInjector()
+        self.streaming_injector = StreamingInjector()
+
+        # Transcriber loaded async (slow - model load)
+        self.streaming_transcriber: StreamingTranscriber | None = None
+
+        # Streaming state
+        self._streaming_thread: threading.Thread | None = None
+        self._streaming_stop = threading.Event()
 
         # Setup menu
-        self.status_item = rumps.MenuItem("Status: Idle")
-        self.status_item.set_callback(None)  # Not clickable
+        self.status_item = rumps.MenuItem("Status: Loading model...")
+        self.status_item.set_callback(None)
         self.menu = [
             self.status_item,
-            None,  # Separator
+            None,
             rumps.MenuItem("Quit", callback=self._quit),
         ]
 
-        # Start hotkey listener in background thread
+        # Start hotkey listener
         self._start_hotkey_listener()
 
-        log.info(f"Murmur initialized (hotkey={config.hotkey}, model={config.model})")
+        # Load model in background thread
+        def load_model():
+            try:
+                transcriber = StreamingTranscriber(model_path=config.model_path)
+                AppHelper.callAfter(lambda: self._on_model_loaded(transcriber))
+            except Exception as e:
+                log.error(f"Model load failed: {e}")
+                AppHelper.callAfter(lambda: self._on_model_load_failed(str(e)))
+
+        threading.Thread(target=load_model, daemon=True).start()
+        log.info(f"Murmur starting (hotkey={config.hotkey}, model={config.model})")
+
+    def _on_model_loaded(self, transcriber: StreamingTranscriber) -> None:
+        """Called when model finishes loading."""
+        self.streaming_transcriber = transcriber
+        self._set_state(State.IDLE)
+        notify("Murmur", "Ready", sound=False)
+        log.info("Model loaded, ready")
+
+    def _on_model_load_failed(self, error: str) -> None:
+        """Called if model fails to load."""
+        self.status_item.title = f"Error: {error[:30]}"
+        notify("Murmur", f"Failed: {error[:50]}", sound=False)
+        log.error(f"Model load failed: {error}")
 
     def _start_hotkey_listener(self) -> None:
         """Start listening for the configured hotkey."""
@@ -115,86 +146,135 @@ class MurmurApp(rumps.App):
         listener = keyboard.Listener(on_press=on_press, on_release=on_release)
         listener.daemon = True
         listener.start()
-        log.debug(f"Hotkey listener started for {hotkey} (toggle on release)")
+        log.debug(f"Hotkey listener started for {hotkey} (toggle on press)")
 
     def _toggle(self) -> None:
-        """Toggle between idle and recording states."""
+        """Toggle between idle and live streaming states."""
         # Debounce: ignore rapid key repeats (200ms minimum)
         now = time.time()
         if now - self._last_toggle_time < 0.2:
             log.debug(f"Toggle ignored (debounce: {now - self._last_toggle_time:.3f}s)")
             return
-        
+
         log.debug(f"Toggle triggered. Current state: {self.state}")
         self._last_toggle_time = now
 
-        if self.state == State.IDLE:
-            self._start_recording()
-        elif self.state == State.RECORDING:
-            self._stop_recording()
-        elif self.state == State.TRANSCRIBING:
-            # Check for stuck state (timeout protection)
-            elapsed = time.time() - self._transcription_start_time
-            if elapsed > TRANSCRIPTION_TIMEOUT:
-                log.warning(f"Transcription stuck for {elapsed:.0f}s, forcing reset")
-                notify("Murmur", "Transcription timed out", sound=False)
-                self._set_state(State.IDLE)
+        if self.state == State.LOADING:
+            log.debug("Model still loading, ignoring toggle")
+            return
+        elif self.state == State.IDLE:
+            self._start_live_streaming()
+        elif self.state == State.LIVE:
+            self._stop_live_streaming()
 
-    def _start_recording(self) -> None:
-        """Start recording audio."""
-        log.info("Recording started")
-        self._set_state(State.RECORDING)
-        self.recorder.start()  # Start mic IMMEDIATELY
-        self._play_sound("start")  # Sound plays in background
+    def _start_live_streaming(self) -> None:
+        """Start live streaming transcription."""
+        log.info("Live streaming started")
+        self._set_state(State.LIVE)
+        self._play_sound("start")
 
-    def _stop_recording(self) -> None:
-        """Stop recording and begin transcription."""
-        log.info("Recording stopped, starting transcription")
-        self._set_state(State.TRANSCRIBING)
-        self._transcription_start_time = time.time()
+        # Reset all streaming components
+        self.streaming_transcriber.reset()
+        self.streaming_injector.reset()
+        self._streaming_stop.clear()
+
+        # Start audio capture
+        self.streaming_recorder.start()
+
+        # Start inference loop in background thread
+        self._streaming_thread = threading.Thread(
+            target=self._streaming_loop,
+            daemon=True,
+        )
+        self._streaming_thread.start()
+
+    def _stop_live_streaming(self) -> None:
+        """Stop live streaming and do final transcription."""
+        log.info("Live streaming stopped, running final pass")
+        self._set_state(State.TRANSCRIBING)  # Immediate UI feedback
         self._play_sound("stop")
 
-        # Get audio data
-        audio_data = self.recorder.stop()
-        audio_duration = len(audio_data) / (16000 * 2) if audio_data else 0
-        log.debug(f"Audio captured: {len(audio_data)} bytes (~{audio_duration:.1f}s)")
+        # Signal streaming loop to stop
+        self._streaming_stop.set()
 
-        if not audio_data or len(audio_data) < 1000:
-            log.warning("Audio too short, skipping transcription")
-            notify("Murmur", "Recording too short", sound=False)
+        # Wait for streaming thread to finish (with timeout)
+        if self._streaming_thread and self._streaming_thread.is_alive():
+            self._streaming_thread.join(timeout=1.0)
+
+        # Get full audio for final pass (as numpy)
+        full_audio = self.streaming_recorder.stop(as_numpy=True)
+
+        if len(full_audio) > 1600:  # >0.1s of audio
+            # Run final transcription on full audio
+            def final_transcribe():
+                try:
+                    result = self.streaming_transcriber.process_audio(
+                        full_audio,
+                        is_final=True,
+                    )
+                    AppHelper.callAfter(lambda: self._on_streaming_complete(result))
+                except Exception as e:
+                    log.error(f"Final transcription error: {e}")
+                    AppHelper.callAfter(lambda: self._on_streaming_complete(None))
+
+            thread = threading.Thread(target=final_transcribe, daemon=True)
+            thread.start()
+        else:
             self._set_state(State.IDLE)
+
+    def _streaming_loop(self) -> None:
+        """Background loop that runs inference periodically."""
+        log.debug("Streaming inference loop started")
+        last_inference = 0.0
+
+        while not self._streaming_stop.is_set():
+            now = time.time()
+
+            # Check if it's time for inference
+            if now - last_inference >= self.INFERENCE_INTERVAL:
+                # Only run inference if there's speech activity or buffer has content
+                if self.streaming_recorder.is_speech_active() or self.streaming_recorder.buffer_duration > 1.0:
+                    audio = self.streaming_recorder.get_audio_window(self.AUDIO_WINDOW)
+
+                    if len(audio) > 1600:  # >0.1s of audio
+                        silence = self.streaming_recorder.silence_duration()
+                        result = self.streaming_transcriber.process_audio(
+                            audio,
+                            silence_duration=silence,
+                            is_final=False,
+                        )
+
+                        if result and result.full_text:
+                            # Update injection on main thread
+                            AppHelper.callAfter(
+                                lambda r=result: self._on_streaming_update(r)
+                            )
+
+                last_inference = now
+
+            # Sleep briefly to avoid busy-waiting
+            time.sleep(0.05)
+
+        log.debug("Streaming inference loop stopped")
+
+    def _on_streaming_update(self, result: StreamingResult) -> None:
+        """Handle streaming transcription update."""
+        if self.state != State.LIVE:
             return
 
-        # Transcribe in background thread
-        def transcribe():
-            try:
-                text = self.transcriber.transcribe(audio_data)
-                # Dispatch completion to main thread
-                AppHelper.callAfter(lambda: self._on_transcription_complete(text))
-            except Exception as e:
-                log.error(f"Transcription thread error: {e}")
-                AppHelper.callAfter(lambda: self._on_transcription_complete(None, str(e)))
+        # Inject the current full text (diff-based)
+        if result.full_text:
+            self.streaming_injector.update(result.full_text)
+            log.debug(f"Live: {result.full_text[:50]}...")
 
-        thread = threading.Thread(target=transcribe, daemon=True)
-        thread.start()
-
-    def _on_transcription_complete(
-        self, text: str | None, error: str | None = None
-    ) -> None:
-        """Handle completed transcription."""
-        elapsed = time.time() - self._transcription_start_time
-
-        if text:
-            log.info(f"Transcription complete in {elapsed:.1f}s: {text[:50]}...")
-            self.injector.inject(text)
+    def _on_streaming_complete(self, result: StreamingResult | None) -> None:
+        """Handle final transcription completion."""
+        if result and result.full_text:
+            # Force final update to ensure all text is typed
+            self.streaming_injector.update(result.full_text, force=True)
+            log.info(f"Final transcription: {result.full_text[:50]}...")
         else:
-            self._play_sound("error")
-            if error:
-                log.error(f"Transcription failed: {error}")
-                notify("Murmur", f"Error: {error[:50]}", sound=False)
-            else:
-                log.warning("Transcription returned empty (silence or error)")
-                notify("Murmur", "No speech detected", sound=False)
+            log.warning("No final transcription result")
 
         self._set_state(State.IDLE)
 
@@ -204,9 +284,10 @@ class MurmurApp(rumps.App):
         self.title = ICONS[state]
 
         status_text = {
+            State.LOADING: "Status: Loading model...",
             State.IDLE: "Status: Idle",
-            State.RECORDING: "Status: Recording...",
             State.TRANSCRIBING: "Status: Transcribing...",
+            State.LIVE: "Status: 🔴 Live",
         }
         self.status_item.title = status_text[state]
 
@@ -248,18 +329,17 @@ def main():
         log.info(f"  Model: {config.model}")
         log.info(f"  Sound: {config.sound}")
 
-        print("Murmur starting...")
+        print("Murmur starting (LIVE MODE)...")
         print(f"  Hotkey: {config.hotkey}")
         print(f"  Model: {config.model}")
         print(f"  Sound: {config.sound}")
         print()
-        print("Press the hotkey to start/stop recording.")
-        print("Text will be typed at your cursor position.")
+        print("Press the hotkey to start/stop live streaming.")
+        print("Text will appear as you speak (with corrections).")
         print(f"Logs: ~/Library/Logs/Murmur/")
         print()
 
         app = MurmurApp(config)
-        notify("Murmur", "Murmur is ready", sound=False)
         app.run()
     except FileNotFoundError as e:
         log.error(f"Setup error: {e}")

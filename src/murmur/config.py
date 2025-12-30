@@ -66,8 +66,3 @@ class Config:
     def model_path(self) -> Path:
         """Get full path to the model file."""
         return self.whisper_path / "models" / f"ggml-{self.model}.bin"
-
-    @property
-    def whisper_binary(self) -> Path:
-        """Get path to whisper-cli binary."""
-        return self.whisper_path / "build" / "bin" / "whisper-cli"

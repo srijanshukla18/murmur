@@ -13,6 +13,9 @@ def setup_logger() -> logging.Logger:
     log_file = log_dir / f"murmur-{datetime.now().strftime('%Y-%m-%d')}.log"
 
     logger = logging.getLogger("murmur")
+    if logger.handlers:
+        return logger
+
     logger.setLevel(logging.DEBUG)
 
     # File handler

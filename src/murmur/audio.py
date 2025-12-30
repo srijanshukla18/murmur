@@ -3,87 +3,203 @@
 import io
 import wave
 import threading
-from typing import Optional
+import time
+from collections import deque
+from typing import Optional, Callable
 
 import numpy as np
 import sounddevice as sd
 
 
-class AudioRecorder:
-    """Records audio from the microphone."""
+class RingBuffer:
+    """Thread-safe ring buffer for audio samples."""
 
-    SAMPLE_RATE = 16000  # Whisper expects 16kHz
-    CHANNELS = 1  # Mono
+    def __init__(self, max_seconds: float, sample_rate: int = 16000):
+        self.max_samples = int(max_seconds * sample_rate)
+        self.sample_rate = sample_rate
+        self._buffer: deque[np.ndarray] = deque()
+        self._total_samples = 0
+        self._lock = threading.Lock()
 
-    def __init__(self):
-        self._buffer: list[np.ndarray] = []
+    def append(self, chunk: np.ndarray) -> None:
+        """Add audio chunk, discarding oldest if over capacity."""
+        with self._lock:
+            self._buffer.append(chunk.copy())
+            self._total_samples += len(chunk)
+            # Trim oldest chunks if over capacity
+            while self._total_samples > self.max_samples and self._buffer:
+                oldest = self._buffer.popleft()
+                self._total_samples -= len(oldest)
+
+    def get_audio(self, last_seconds: Optional[float] = None) -> np.ndarray:
+        """Get audio from buffer (last N seconds or all)."""
+        with self._lock:
+            if not self._buffer:
+                return np.array([], dtype=np.float32)
+            audio = np.concatenate(list(self._buffer))
+            if last_seconds is not None:
+                max_samples = int(last_seconds * self.sample_rate)
+                if len(audio) > max_samples:
+                    audio = audio[-max_samples:]
+            return audio
+
+    def clear(self) -> None:
+        """Clear the buffer."""
+        with self._lock:
+            self._buffer.clear()
+            self._total_samples = 0
+
+    @property
+    def duration(self) -> float:
+        """Current buffer duration in seconds."""
+        with self._lock:
+            return self._total_samples / self.sample_rate
+
+
+class VAD:
+    """Simple Voice Activity Detection using RMS energy."""
+
+    def __init__(
+        self,
+        threshold: float = 0.01,
+        speech_pad_ms: int = 300,
+        sample_rate: int = 16000,
+    ):
+        self.threshold = threshold
+        self.speech_pad_samples = int(speech_pad_ms * sample_rate / 1000)
+        self.sample_rate = sample_rate
+        self._last_speech_time = 0.0
+        self._is_speaking = False
+
+    def process(self, audio: np.ndarray) -> bool:
+        """Check if audio contains speech. Returns True if speech detected."""
+        if len(audio) == 0:
+            return False
+        rms = np.sqrt(np.mean(audio**2))
+        now = time.time()
+        if rms > self.threshold:
+            self._last_speech_time = now
+            self._is_speaking = True
+            return True
+        # Pad silence after speech
+        if self._is_speaking and (now - self._last_speech_time) < (self.speech_pad_samples / self.sample_rate):
+            return True
+        self._is_speaking = False
+        return False
+
+    def silence_duration(self) -> float:
+        """How long since last speech detected."""
+        if self._is_speaking:
+            return 0.0
+        return time.time() - self._last_speech_time
+
+    def reset(self) -> None:
+        """Reset VAD state."""
+        self._last_speech_time = 0.0
+        self._is_speaking = False
+
+
+class StreamingRecorder:
+    """Records audio with ring buffer for live streaming transcription."""
+
+    SAMPLE_RATE = 16000
+    CHANNELS = 1
+
+    def __init__(
+        self,
+        buffer_seconds: float = 12.0,
+        vad_threshold: float = 0.01,
+        on_audio_chunk: Optional[Callable[[np.ndarray], None]] = None,
+    ):
+        self.ring_buffer = RingBuffer(buffer_seconds, self.SAMPLE_RATE)
+        self.vad = VAD(threshold=vad_threshold, sample_rate=self.SAMPLE_RATE)
+        self._on_audio_chunk = on_audio_chunk
         self._recording = False
         self._stream: Optional[sd.InputStream] = None
         self._lock = threading.Lock()
+        self._full_buffer: list[np.ndarray] = []  # Keep all audio for final pass
 
     def start(self) -> None:
-        """Start recording audio."""
+        """Start streaming audio capture."""
         with self._lock:
             if self._recording:
                 return
-
-            self._buffer = []
+            self.ring_buffer.clear()
+            self.vad.reset()
+            self._full_buffer = []
             self._recording = True
-
             self._stream = sd.InputStream(
                 samplerate=self.SAMPLE_RATE,
                 channels=self.CHANNELS,
                 dtype=np.float32,
                 callback=self._audio_callback,
+                blocksize=int(self.SAMPLE_RATE * 0.1),  # 100ms chunks
             )
             self._stream.start()
 
-    def stop(self) -> bytes:
-        """Stop recording and return WAV data."""
+    def stop(self, as_numpy: bool = True) -> np.ndarray | bytes:
+        """Stop recording and return full audio.
+
+        Args:
+            as_numpy: If True, return float32 numpy array. If False, return WAV bytes.
+        """
         with self._lock:
             if not self._recording:
-                return b""
-
+                return np.array([], dtype=np.float32) if as_numpy else b""
             self._recording = False
-
             if self._stream:
                 self._stream.stop()
                 self._stream.close()
                 self._stream = None
+            if not self._full_buffer:
+                return np.array([], dtype=np.float32) if as_numpy else b""
+            audio = np.concatenate(self._full_buffer)
+            self._full_buffer = []
+            return audio if as_numpy else self._to_wav(audio)
 
-            if not self._buffer:
-                return b""
+    def get_audio_window(self, last_seconds: Optional[float] = None) -> np.ndarray:
+        """Get audio from ring buffer for inference."""
+        return self.ring_buffer.get_audio(last_seconds)
 
-            # Concatenate all audio chunks
-            audio = np.concatenate(self._buffer)
-            self._buffer = []
+    def is_speech_active(self) -> bool:
+        """Check if speech is currently detected."""
+        return self.vad._is_speaking
 
-            # Convert to WAV format
-            return self._to_wav(audio)
+    def silence_duration(self) -> float:
+        """Get duration of current silence."""
+        return self.vad.silence_duration()
 
     def _audio_callback(
         self, indata: np.ndarray, frames: int, time_info, status
     ) -> None:
-        """Callback for audio stream."""
-        if self._recording:
-            self._buffer.append(indata.copy())
+        """Audio stream callback."""
+        chunk = indata[:, 0] if indata.ndim > 1 else indata.flatten()
+        with self._lock:
+            if not self._recording:
+                return
+            self.ring_buffer.append(chunk)
+            self._full_buffer.append(chunk.copy())
+            self.vad.process(chunk)
+        if self._on_audio_chunk:
+            self._on_audio_chunk(chunk)
 
     def _to_wav(self, audio: np.ndarray) -> bytes:
         """Convert float32 audio to WAV bytes."""
-        # Convert float32 [-1, 1] to int16
         audio_int16 = (audio * 32767).astype(np.int16)
-
-        # Write to WAV buffer
         buffer = io.BytesIO()
         with wave.open(buffer, "wb") as wf:
             wf.setnchannels(self.CHANNELS)
-            wf.setsampwidth(2)  # 16-bit
+            wf.setsampwidth(2)
             wf.setframerate(self.SAMPLE_RATE)
             wf.writeframes(audio_int16.tobytes())
-
         return buffer.getvalue()
 
     @property
     def is_recording(self) -> bool:
         """Check if currently recording."""
         return self._recording
+
+    @property
+    def buffer_duration(self) -> float:
+        """Current ring buffer duration."""
+        return self.ring_buffer.duration
