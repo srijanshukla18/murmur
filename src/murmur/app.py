@@ -75,6 +75,7 @@ class MurmurApp:
                     prompt_max_words=config.prompt_max_words,
                     overlap_max_words=config.overlap_max_words,
                     min_audio_seconds=config.min_audio_seconds,
+                    use_initial_prompt=config.use_initial_prompt,
                 )
                 self._on_model_loaded(transcriber)
             except Exception as e:
@@ -223,14 +224,17 @@ class MurmurApp:
                 # 3. OR the buffer is getting full (cleanup)
                 is_speaking = self.streaming_recorder.is_speech_active()
                 has_pending = self.streaming_transcriber.pending_text != ""
+                buffer_dur = self.streaming_recorder.buffer_duration
 
-                if is_speaking or has_pending or self.streaming_recorder.buffer_duration > self.config.audio_window_seconds:
+                if is_speaking or has_pending or buffer_dur > self.config.audio_window_seconds:
                     audio = self.streaming_recorder.get_audio_window(
                         self.config.audio_window_seconds
                     )
 
                     if len(audio) > self._min_audio_samples:
                         silence = self.streaming_recorder.silence_duration()
+                        log.debug(f"Inference: dur={len(audio)/16000:.1f}s, silence={silence:.1f}s, speaking={is_speaking}, pending={has_pending}")
+                        
                         result = self.streaming_transcriber.process_audio(
                             audio,
                             silence_duration=silence,
@@ -241,8 +245,14 @@ class MurmurApp:
                             # If we committed text, we can clear the audio buffer
                             # to prevent "hearing" the same words again.
                             # The committed text becomes the prompt for the next pass.
-                            if len(result.committed_text) > 0 and result.committed_text != self.streaming_transcriber._last_committed_at_clear:
-                                self.streaming_recorder.consume_audio(0) # Clear all
+                            if (
+                                self.config.consume_audio_on_commit
+                                and len(result.committed_text) > 0
+                                and result.committed_text != self.streaming_transcriber._last_committed_at_clear
+                            ):
+                                duration = len(audio) / 16000.0
+                                log.debug(f"Commit detected, pruning {duration:.1f}s from buffer. Prefix: '{result.committed_text[-30:]}'")
+                                self.streaming_recorder.consume_audio(duration)
                                 self.streaming_transcriber._last_committed_at_clear = result.committed_text
                                 
                             self._on_streaming_update(result)

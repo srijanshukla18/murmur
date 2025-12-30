@@ -1,7 +1,7 @@
 # Murmur configuration (TOML)
 #
 # This file is loaded first. To override defaults, copy it to:
-#   ~/.config/murmur/murmur.conf
+#   ~/.config/murmur/murmur.toml
 #
 # All parameter explanations and tuning tips live here.
 
@@ -10,7 +10,8 @@
 hotkey = "alt_r"
 
 # Whisper model name (matches ggml-<model>.bin in whisper.cpp/models)
-model = "base.en"
+# Options: tiny.en, base.en, small.en, medium.en, large
+model = "small.en"
 
 # Play system sounds on start/stop
 sound = true
@@ -46,7 +47,7 @@ vad_threshold = 0.01
 
 # How long speech stays "active" after volume drops (ms).
 # If a short pause stops live updates, increase this (400-800).
-vad_speech_pad_ms = 800
+vad_speech_pad_ms = 1200
 
 # Stability rules for committing text.
 # If text flickers/re-writes too much, increase stability_count.
@@ -55,25 +56,33 @@ stability_count = 2
 
 # Commit after this much silence (ms).
 # Lower = commit faster after pauses. Higher = fewer premature commits.
-silence_commit_ms = 800
+silence_commit_ms = 2000
 
 # Prompt length (last N committed words) to keep continuity.
 # Increase if it loses context across long sentences.
-prompt_max_words = 60
+prompt_max_words = 80
 
 # Word overlap used to merge window text with committed text.
 # Increase if earlier words get replaced or chopped on long sentences.
-overlap_max_words = 40
+overlap_max_words = 60
+
+# [Advanced] Use committed text as prompt for next inference?
+# Essential for continuity (context), but can cause repetition if not handled.
+use_initial_prompt = true
+
+# [Advanced] Consume (delete) audio from buffer after committing text?
+# Prevents "looping" where the model hears old words again.
+consume_audio_on_commit = true
 
 [injector]
 # Throttle how many times per second we inject text.
 # Lower if apps struggle with rapid typing.
-max_updates_per_sec = 5
+max_updates_per_sec = 6
 
 # Max characters that can be backspaced (tail only).
 # If you see long backspacing, lower this.
 # If corrections don't reach far enough, increase this.
-max_backspace_chars = 50
+max_backspace_chars = 400
 
 # Typing speed (seconds per keystroke). Increase if characters drop.
 keystroke_delay_seconds = 0.002

@@ -12,6 +12,8 @@ from Quartz import (
     kCGHIDEventTap,
 )
 
+from .logger import log
+
 
 class StreamingInjector:
     """Diff-based text injector for live streaming transcription."""
@@ -69,6 +71,7 @@ class StreamingInjector:
             if self._max_backspace_chars is not None and len(old_text) > self._max_backspace_chars:
                 prefix_keep = old_text[:-self._max_backspace_chars]
                 if not new_text.startswith(prefix_keep):
+                    log.warning(f"Injector: update blocked (needs backspacing > {self._max_backspace_chars} chars)")
                     return False
                 old_tail = old_text[len(prefix_keep):]
                 new_tail = new_text[len(prefix_keep):]

@@ -33,6 +33,7 @@ class StreamingTranscriber:
         prompt_max_words: int = 50,
         overlap_max_words: int = 20,
         min_audio_seconds: float = 0.1,
+        use_initial_prompt: bool = True,
         on_update: Optional[Callable[[StreamingResult], None]] = None,
     ):
         self.model_path = model_path
@@ -42,6 +43,7 @@ class StreamingTranscriber:
         self._prompt_max_words = prompt_max_words
         self._overlap_max_words = overlap_max_words
         self._min_audio_samples = max(1, int(16000 * min_audio_seconds))
+        self._use_initial_prompt = use_initial_prompt
 
         # Load model once, keep in memory
         log.info(f"Loading whisper model: {model_path}")
@@ -109,8 +111,8 @@ class StreamingTranscriber:
             def on_segment(seg):
                 segments.append(seg.text)
 
-            # Transcribe with prompt for context
-            if prompt:
+            # Transcribe with prompt for context (if enabled)
+            if prompt and self._use_initial_prompt:
                 self._model.transcribe(
                     audio,
                     new_segment_callback=on_segment,
@@ -135,10 +137,11 @@ class StreamingTranscriber:
                  prompt_words = prompt.split()
                  output_words = cleaned.split()
                  
-                 # Try to find where the output overlaps with the prompt
-                 overlap_len = 0
+                 # Only check against the words we actually sent as prompt
+                 # (Limit check to prompt length)
                  max_check = min(len(prompt_words), len(output_words), 20)
                  
+                 overlap_len = 0
                  for i in range(max_check, 0, -1):
                      if output_words[:i] == prompt_words[-i:]:
                          overlap_len = i
@@ -193,6 +196,7 @@ class StreamingTranscriber:
         )
 
         if should_commit and merged_text:
+            log.debug(f"Commit: '{merged_text[-30:]}' (stability={self._stability_count}, silence={silence_duration:.1f}s)")
             self._committed_text = merged_text
             self._pending_text = ""
         else:
@@ -229,8 +233,10 @@ class StreamingTranscriber:
         for overlap in range(max_overlap, 0, -1):
             if committed_words[-overlap:] == new_words[:overlap]:
                 merged_words = committed_words + new_words[overlap:]
+                log.debug(f"Merge: overlap of {overlap} words found")
                 return " ".join(merged_words)
 
+        log.debug(f"Merge: no overlap found, forcing append")
         return f"{committed} {new_text}".strip()
 
     def _clean_output(self, text: str) -> Optional[str]:

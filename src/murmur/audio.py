@@ -43,6 +43,22 @@ class RingBuffer:
                     audio = audio[-max_samples:]
             return audio
 
+    def prune(self, seconds: float) -> None:
+        """Remove oldest N seconds from the buffer."""
+        with self._lock:
+            samples_to_remove = int(seconds * self.sample_rate)
+            while samples_to_remove > 0 and self._buffer:
+                chunk = self._buffer[0]
+                if len(chunk) <= samples_to_remove:
+                    self._buffer.popleft()
+                    self._total_samples -= len(chunk)
+                    samples_to_remove -= len(chunk)
+                else:
+                    # Partial chunk removal
+                    self._buffer[0] = chunk[samples_to_remove:].copy()
+                    self._total_samples -= samples_to_remove
+                    samples_to_remove = 0
+
     def clear(self) -> None:
         """Clear the buffer."""
         with self._lock:
@@ -177,15 +193,11 @@ class StreamingRecorder:
 
     def consume_audio(self, seconds: float) -> None:
         """Remove old audio from the buffer (it has been transcribed)."""
-        # We don't actually remove it from the ring buffer implementation easily,
-        # but for this specific "clean slate" fix, clearing the buffer
-        # when a major commit happens is the safest way to prevent loops.
-        # However, a hard clear might lose the very start of the next word.
-        # A better approach for the ring buffer is to just reset it if we trust
-        # the prompt to carry the context.
+        if seconds <= 0:
+            return
         with self._lock:
-            self.ring_buffer.clear()
-            self.vad.reset()  # Reset VAD too so we don't carry over old speech state
+            self.ring_buffer.prune(seconds)
+            # DO NOT reset VAD here, as it causes timestamp jumps
 
     def is_speech_active(self) -> bool:
         """Check if speech is currently detected."""

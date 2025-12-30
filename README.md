@@ -126,7 +126,7 @@ uv run murmur
 
 ## Configuration
 
-Defaults live in `murmur.conf`. To override, copy it to `~/.config/murmur/murmur.conf` and edit values. All parameter explanations and tuning tips live as comments inside that file.
+Defaults live in `murmur.toml`. To override, copy it to `~/.config/murmur/murmur.toml` (or `config.toml`) and edit values. All parameter explanations and tuning tips live as comments inside that file.
 
 Environment overrides are supported for `MURMUR_HOTKEY`, `MURMUR_MODEL`, and `MURMUR_SOUND`.
 

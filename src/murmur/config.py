@@ -15,7 +15,7 @@ class Config:
     """Murmur configuration."""
 
     hotkey: str = "alt_r"  # pynput key name for Right Option
-    model: str = "base.en"
+    model: str = "small.en"
     sound: bool = True
     toggle_debounce_seconds: float = 0.2
 
@@ -30,6 +30,8 @@ class Config:
     silence_commit_ms: int = 600
     prompt_max_words: int = 50
     overlap_max_words: int = 20
+    use_initial_prompt: bool = True
+    consume_audio_on_commit: bool = True
 
     max_updates_per_sec: int = 4
     max_backspace_chars: int = 30
@@ -84,6 +86,10 @@ class Config:
             config.prompt_max_words = int(streaming_config["prompt_max_words"])
         if "overlap_max_words" in streaming_config:
             config.overlap_max_words = int(streaming_config["overlap_max_words"])
+        if "use_initial_prompt" in streaming_config:
+            config.use_initial_prompt = bool(streaming_config["use_initial_prompt"])
+        if "consume_audio_on_commit" in streaming_config:
+            config.consume_audio_on_commit = bool(streaming_config["consume_audio_on_commit"])
 
         if "max_updates_per_sec" in injector_config:
             config.max_updates_per_sec = int(injector_config["max_updates_per_sec"])
@@ -144,9 +150,11 @@ class Config:
     def _config_paths() -> list[Path]:
         repo_root = Path(__file__).resolve().parents[2]
         return [
-            repo_root / "murmur.conf",
-            Path.home() / ".config" / "murmur" / "murmur.conf",
+            repo_root / "murmur.toml",
+            repo_root / "murmur.conf",  # Legacy support
+            Path.home() / ".config" / "murmur" / "murmur.toml",
             Path.home() / ".config" / "murmur" / "config.toml",
+            Path.home() / ".config" / "murmur" / "murmur.conf",
         ]
 
     @property
