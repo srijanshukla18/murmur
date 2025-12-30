@@ -175,6 +175,18 @@ class StreamingRecorder:
         """Get audio from ring buffer for inference."""
         return self.ring_buffer.get_audio(last_seconds)
 
+    def consume_audio(self, seconds: float) -> None:
+        """Remove old audio from the buffer (it has been transcribed)."""
+        # We don't actually remove it from the ring buffer implementation easily,
+        # but for this specific "clean slate" fix, clearing the buffer
+        # when a major commit happens is the safest way to prevent loops.
+        # However, a hard clear might lose the very start of the next word.
+        # A better approach for the ring buffer is to just reset it if we trust
+        # the prompt to carry the context.
+        with self._lock:
+            self.ring_buffer.clear()
+            self.vad.reset()  # Reset VAD too so we don't carry over old speech state
+
     def is_speech_active(self) -> bool:
         """Check if speech is currently detected."""
         return self.vad.is_speaking

@@ -58,6 +58,7 @@ class StreamingTranscriber:
         self._committed_text = ""
         self._pending_text = ""
         self._last_full_text = ""
+        self._last_committed_at_clear = ""
         self._stability_count = 0
         self._lock = threading.Lock()
 
@@ -86,14 +87,13 @@ class StreamingTranscriber:
         if audio is None or len(audio) < self._min_audio_samples:
             return None
 
-        # Run inference with prompt for continuity
+        # Run inference on the sliding window
         text = self._transcribe(audio)
 
-        # Even if Whisper returns nothing (silence), we must run stability update
-        # to allow for silence-based commits of previously pending text.
+        # Silence handling: update stability even if text is None
+        # to allow silence-based commits of pending text.
         with self._lock:
-            text_to_process = text if text is not None else self._committed_text
-            return self._update_stability(text_to_process, silence_duration, is_final)
+            return self._update_stability(text, silence_duration, is_final)
 
     def _transcribe(self, audio: np.ndarray) -> Optional[str]:
         """Run whisper inference on audio."""
@@ -105,16 +105,16 @@ class StreamingTranscriber:
                     words = self._committed_text.split()[-self._prompt_max_words:]
                     prompt = " ".join(words)
 
-            # Transcribe with callback for segments
             segments = []
             def on_segment(seg):
                 segments.append(seg.text)
 
+            # Transcribe with prompt for context
             if prompt:
                 self._model.transcribe(
                     audio,
                     new_segment_callback=on_segment,
-                    prompt=prompt,
+                    initial_prompt=prompt,
                 )
             else:
                 self._model.transcribe(
@@ -126,7 +126,29 @@ class StreamingTranscriber:
                 return None
 
             text = " ".join(segments)
-            return self._clean_output(text)
+            cleaned = self._clean_output(text)
+            
+            # Anti-loop safety: if the output starts with the prompt (or suffix of it),
+            # strip it. Whisper often repeats the prompt in the output.
+            if cleaned and prompt:
+                 # Check for near-exact suffix match of prompt in output
+                 prompt_words = prompt.split()
+                 output_words = cleaned.split()
+                 
+                 # Try to find where the output overlaps with the prompt
+                 overlap_len = 0
+                 max_check = min(len(prompt_words), len(output_words), 20)
+                 
+                 for i in range(max_check, 0, -1):
+                     if output_words[:i] == prompt_words[-i:]:
+                         overlap_len = i
+                         break
+                 
+                 if overlap_len > 0:
+                     # Strip the repetitve prefix
+                     cleaned = " ".join(output_words[overlap_len:])
+
+            return cleaned if cleaned else None
 
         except Exception as e:
             log.debug(f"Transcription error: {e}")
@@ -134,12 +156,16 @@ class StreamingTranscriber:
 
     def _update_stability(
         self,
-        new_text: str,
+        new_text: Optional[str],
         silence_duration: float,
         is_final: bool,
     ) -> StreamingResult:
         """Update committed/pending text based on stability rules."""
+        if new_text is None:
+            new_text = ""
         new_text = new_text.strip()
+
+        # Merge with already committed prefix
         merged_text = self._merge_with_committed(self._committed_text, new_text)
 
         # Final pass: commit everything

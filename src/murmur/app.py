@@ -238,6 +238,13 @@ class MurmurApp:
                         )
 
                         if result:
+                            # If we committed text, we can clear the audio buffer
+                            # to prevent "hearing" the same words again.
+                            # The committed text becomes the prompt for the next pass.
+                            if len(result.committed_text) > 0 and result.committed_text != self.streaming_transcriber._last_committed_at_clear:
+                                self.streaming_recorder.consume_audio(0) # Clear all
+                                self.streaming_transcriber._last_committed_at_clear = result.committed_text
+                                
                             self._on_streaming_update(result)
 
                 last_inference = now
