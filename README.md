@@ -122,15 +122,6 @@ uv run murmur
 3. Speak — text appears live as you talk
 4. **Tap Right Option (⌥)** — final pass runs, you hear "Blow"
 
-### Menu Bar States
-
-| Icon | State | Meaning |
-|------|-------|---------|
-| 🎤 | Idle | Ready |
-| 🔴 | Live | Streaming transcription active |
-
----
-
 ## Configuration
 
 Environment variables or `~/.config/murmur/config.toml`:
@@ -220,4 +211,3 @@ MIT
 
 - [whisper.cpp](https://github.com/ggerganov/whisper.cpp) — Georgi Gerganov
 - [pywhispercpp](https://github.com/absadiki/pywhispercpp) — Python bindings
-- [rumps](https://github.com/jaredks/rumps) — macOS menu bar

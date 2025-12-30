@@ -1,4 +1,4 @@
-"""Menu bar application for Murmur."""
+"""Application entry point for Murmur."""
 
 import subprocess
 import threading
@@ -6,15 +6,12 @@ import time
 from enum import Enum
 from pathlib import Path
 
-import rumps
 from pynput import keyboard
-from PyObjCTools import AppHelper
 
 from .audio import StreamingRecorder
 from .config import Config
 from .inject import StreamingInjector
 from .logger import log
-from .notify import notify
 from .transcribe import StreamingTranscriber, StreamingResult
 
 
@@ -27,14 +24,6 @@ class State(Enum):
     LIVE = "live"
 
 
-# Menu bar icons for each state
-ICONS = {
-    State.LOADING: "⏳",
-    State.IDLE: "🎤",
-    State.TRANSCRIBING: "⏳",
-    State.LIVE: "🔴",
-}
-
 # macOS system sounds
 SOUNDS = {
     "start": "/System/Library/Sounds/Funk.aiff",
@@ -42,20 +31,16 @@ SOUNDS = {
     "error": "/System/Library/Sounds/Basso.aiff",
 }
 
-class MurmurApp(rumps.App):
-    """Murmur menu bar application."""
+class MurmurApp:
+    """Murmur live streaming application."""
 
     # Streaming config
     INFERENCE_INTERVAL = 0.5  # Run inference every 500ms
     AUDIO_WINDOW = 10.0       # Use last 10s of audio for inference
 
     def __init__(self, config: Config):
-        super().__init__("Murmur", quit_button=None)
-
         self.config = config
         self.state = State.LOADING
-        self.title = ICONS[State.LOADING]
-        self._transcription_start_time = 0
         self._last_toggle_time = 0
 
         # Initialize audio/injection (fast)
@@ -72,15 +57,6 @@ class MurmurApp(rumps.App):
         self._streaming_thread: threading.Thread | None = None
         self._streaming_stop = threading.Event()
 
-        # Setup menu
-        self.status_item = rumps.MenuItem("Status: Loading model...")
-        self.status_item.set_callback(None)
-        self.menu = [
-            self.status_item,
-            None,
-            rumps.MenuItem("Quit", callback=self._quit),
-        ]
-
         # Start hotkey listener
         self._start_hotkey_listener()
 
@@ -88,10 +64,10 @@ class MurmurApp(rumps.App):
         def load_model():
             try:
                 transcriber = StreamingTranscriber(model_path=config.model_path)
-                AppHelper.callAfter(lambda: self._on_model_loaded(transcriber))
+                self._on_model_loaded(transcriber)
             except Exception as e:
                 log.error(f"Model load failed: {e}")
-                AppHelper.callAfter(lambda: self._on_model_load_failed(str(e)))
+                self._on_model_load_failed(str(e))
 
         threading.Thread(target=load_model, daemon=True).start()
         log.info(f"Murmur starting (hotkey={config.hotkey}, model={config.model})")
@@ -100,13 +76,10 @@ class MurmurApp(rumps.App):
         """Called when model finishes loading."""
         self.streaming_transcriber = transcriber
         self._set_state(State.IDLE)
-        notify("Murmur", "Ready", sound=False)
         log.info("Model loaded, ready")
 
     def _on_model_load_failed(self, error: str) -> None:
         """Called if model fails to load."""
-        self.status_item.title = f"Error: {error[:30]}"
-        notify("Murmur", f"Failed: {error[:50]}", sound=False)
         log.error(f"Model load failed: {error}")
 
     def _start_hotkey_listener(self) -> None:
@@ -129,14 +102,13 @@ class MurmurApp(rumps.App):
             target_key = keyboard.Key.alt_r
 
         # Track state and debounce (macOS modifier keys generate multiple events)
-        key_state = {"pressed": False, "last_release": 0.0}
+        key_state = {"pressed": False}
 
         def on_press(key):
             if key == target_key and not key_state["pressed"]:
                 key_state["pressed"] = True
                 log.debug("Hotkey pressed (down) - triggering toggle")
-                # Dispatch to main thread immediately on press
-                AppHelper.callAfter(self._toggle)
+                self._toggle()
 
         def on_release(key):
             if key == target_key and key_state["pressed"]:
@@ -146,6 +118,7 @@ class MurmurApp(rumps.App):
         listener = keyboard.Listener(on_press=on_press, on_release=on_release)
         listener.daemon = True
         listener.start()
+        self._listener = listener
         log.debug(f"Hotkey listener started for {hotkey} (toggle on press)")
 
     def _toggle(self) -> None:
@@ -212,10 +185,10 @@ class MurmurApp(rumps.App):
                         full_audio,
                         is_final=True,
                     )
-                    AppHelper.callAfter(lambda: self._on_streaming_complete(result))
+                    self._on_streaming_complete(result)
                 except Exception as e:
                     log.error(f"Final transcription error: {e}")
-                    AppHelper.callAfter(lambda: self._on_streaming_complete(None))
+                    self._on_streaming_complete(None)
 
             thread = threading.Thread(target=final_transcribe, daemon=True)
             thread.start()
@@ -245,10 +218,7 @@ class MurmurApp(rumps.App):
                         )
 
                         if result and result.full_text:
-                            # Update injection on main thread
-                            AppHelper.callAfter(
-                                lambda r=result: self._on_streaming_update(r)
-                            )
+                            self._on_streaming_update(result)
 
                 last_inference = now
 
@@ -279,17 +249,9 @@ class MurmurApp(rumps.App):
         self._set_state(State.IDLE)
 
     def _set_state(self, state: State) -> None:
-        """Update application state and UI."""
+        """Update application state."""
         self.state = state
-        self.title = ICONS[state]
-
-        status_text = {
-            State.LOADING: "Status: Loading model...",
-            State.IDLE: "Status: Idle",
-            State.TRANSCRIBING: "Status: Transcribing...",
-            State.LIVE: "Status: 🔴 Live",
-        }
-        self.status_item.title = status_text[state]
+        log.debug(f"State -> {state.value}")
 
     def _play_sound(self, sound_name: str, wait: bool = False) -> None:
         """Play a system sound."""
@@ -313,10 +275,13 @@ class MurmurApp(rumps.App):
                     stderr=subprocess.DEVNULL,
                 )
 
-    def _quit(self, _) -> None:
-        """Quit the application."""
+    def shutdown(self) -> None:
+        """Shutdown the application."""
+        if self.state == State.LIVE:
+            self._stop_live_streaming()
+        if getattr(self, "_listener", None):
+            self._listener.stop()
         log.info("Murmur shutting down")
-        rumps.quit_application()
 
 
 def main():
@@ -340,7 +305,13 @@ def main():
         print()
 
         app = MurmurApp(config)
-        app.run()
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print("\nStopping Murmur...")
+        finally:
+            app.shutdown()
     except FileNotFoundError as e:
         log.error(f"Setup error: {e}")
         print(f"Error: {e}")
