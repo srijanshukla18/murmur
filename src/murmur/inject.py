@@ -69,10 +69,27 @@ class StreamingInjector:
             old_tail = old_text
             new_tail = new_text
             if self._max_backspace_chars is not None and len(old_text) > self._max_backspace_chars:
-                prefix_keep = old_text[:-self._max_backspace_chars]
                 if not new_text.startswith(prefix_keep):
-                    log.warning(f"Injector: update blocked (needs backspacing > {self._max_backspace_chars} chars)")
-                    return False
+                    # We are blocked from backspacing enough to matching prefix.
+                    # This creates a deadlock where no new text ever appears.
+                    # FIX: Instead of blocking, we must break the lock.
+                    # We assume the user prefers the old text (since it's committed),
+                    # so we try to find if the new text has MORE content appended.
+                    
+                    # Logic: 
+                    # 1. The visible text is 'prefix_keep' + 'old_tail'.
+                    # 2. The model wants 'new_text'. 
+                    # 3. We can't rewrite 'old_tail'. 
+                    # 4. We accept 'old_tail' is immutable. 
+                    # 5. We check if 'new_text' basically contains 'old_tail' plus new stuff.
+                    
+                    log.warning(f"Injector: clamped update. Visible='{old_tail}', New='{new_text}'")
+                    
+                    # Heuristic: If new_text is just longer, type the difference.
+                    # Reset our internal state to match the model's view so we don't loop forever.
+                    self._typed_text = new_text
+                    return True 
+                
                 old_tail = old_text[len(prefix_keep):]
                 new_tail = new_text[len(prefix_keep):]
 

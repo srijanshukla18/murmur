@@ -32,6 +32,7 @@ class Config:
     overlap_max_words: int = 20
     use_initial_prompt: bool = True
     consume_audio_on_commit: bool = True
+    batch_mode: bool = False
 
     max_updates_per_sec: int = 4
     max_backspace_chars: int = 30
@@ -90,6 +91,8 @@ class Config:
             config.use_initial_prompt = bool(streaming_config["use_initial_prompt"])
         if "consume_audio_on_commit" in streaming_config:
             config.consume_audio_on_commit = bool(streaming_config["consume_audio_on_commit"])
+        if "batch_mode" in streaming_config:
+            config.batch_mode = bool(streaming_config["batch_mode"])
 
         if "max_updates_per_sec" in injector_config:
             config.max_updates_per_sec = int(injector_config["max_updates_per_sec"])

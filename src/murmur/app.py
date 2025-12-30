@@ -225,15 +225,32 @@ class MurmurApp:
                 is_speaking = self.streaming_recorder.is_speech_active()
                 has_pending = self.streaming_transcriber.pending_text != ""
                 buffer_dur = self.streaming_recorder.buffer_duration
+                silence = self.streaming_recorder.silence_duration()
 
-                if is_speaking or has_pending or buffer_dur > self.config.audio_window_seconds:
+                should_run = False
+                if self.config.batch_mode:
+                    # In batch mode, we ONLY run if:
+                    # 1. We are silent long enough (end of sentence)
+                    # 2. OR buffer is getting full (forced flush)
+                    # 3. OR pending text waiting to commit
+                    if silence >= (self.config.silence_commit_ms / 1000.0):
+                        should_run = True
+                    elif buffer_dur >= (self.config.buffer_seconds * 0.9):
+                        should_run = True
+                    elif has_pending and not is_speaking:
+                         should_run = True
+                else:
+                    # Original "Live" mode logic
+                    if is_speaking or has_pending or buffer_dur > self.config.audio_window_seconds:
+                        should_run = True
+
+                if should_run:
                     audio = self.streaming_recorder.get_audio_window(
                         self.config.audio_window_seconds
                     )
 
                     if len(audio) > self._min_audio_samples:
-                        silence = self.streaming_recorder.silence_duration()
-                        log.debug(f"Inference: dur={len(audio)/16000:.1f}s, silence={silence:.1f}s, speaking={is_speaking}, pending={has_pending}")
+                        log.debug(f"Inference: dur={len(audio)/16000:.1f}s, silence={silence:.1f}s, speaking={is_speaking}, pending={has_pending}, batch={self.config.batch_mode}")
                         
                         result = self.streaming_transcriber.process_audio(
                             audio,

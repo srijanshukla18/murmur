@@ -25,13 +25,18 @@ toggle_debounce_seconds = 0.2
 # If long sentences lose early words, increase this (e.g., 20-30).
 buffer_seconds = 20.0
 
+# [Mode Selection]
+# true = "Voice Memo" style. Waits for pause, then types whole sentence. Stable, no backspacing.
+# false = "Live" style. Types as you speak. Faster, but might backspace/correct.
+batch_mode = true
+
 # Window length used for each inference (seconds).
 # If live text stalls after short pauses, increase this (12-20).
 audio_window_seconds = 10.0
 
 # How often to run inference.
 # Lower = faster updates, higher CPU. Higher = calmer, lower CPU.
-inference_interval_seconds = 0.5
+inference_interval_seconds = 1.2
 
 # Microphone chunk size (ms).
 # Lower = more responsive, higher CPU. Higher = more stable, slightly more lag.
@@ -39,7 +44,7 @@ audio_chunk_ms = 100
 
 # Minimum audio length before running inference (seconds).
 # Raise to ignore tiny noise; lower if you need very fast updates.
-min_audio_seconds = 0.1
+min_audio_seconds = 0.5
 
 # VAD (voice activity detection) sensitivity.
 # Lower = more sensitive to quiet speech; higher = ignores background noise.
@@ -47,7 +52,7 @@ vad_threshold = 0.01
 
 # How long speech stays "active" after volume drops (ms).
 # If a short pause stops live updates, increase this (400-800).
-vad_speech_pad_ms = 1200
+vad_speech_pad_ms = 800
 
 # Stability rules for committing text.
 # If text flickers/re-writes too much, increase stability_count.
@@ -56,19 +61,19 @@ stability_count = 2
 
 # Commit after this much silence (ms).
 # Lower = commit faster after pauses. Higher = fewer premature commits.
-silence_commit_ms = 2000
+silence_commit_ms = 800
 
 # Prompt length (last N committed words) to keep continuity.
 # Increase if it loses context across long sentences.
-prompt_max_words = 80
+prompt_max_words = 60
 
 # Word overlap used to merge window text with committed text.
 # Increase if earlier words get replaced or chopped on long sentences.
-overlap_max_words = 60
+overlap_max_words = 40
 
 # [Advanced] Use committed text as prompt for next inference?
 # Essential for continuity (context), but can cause repetition if not handled.
-use_initial_prompt = true
+use_initial_prompt = false
 
 # [Advanced] Consume (delete) audio from buffer after committing text?
 # Prevents "looping" where the model hears old words again.
@@ -77,12 +82,12 @@ consume_audio_on_commit = true
 [injector]
 # Throttle how many times per second we inject text.
 # Lower if apps struggle with rapid typing.
-max_updates_per_sec = 6
+max_updates_per_sec = 5
 
 # Max characters that can be backspaced (tail only).
 # If you see long backspacing, lower this.
 # If corrections don't reach far enough, increase this.
-max_backspace_chars = 400
+max_backspace_chars = 20
 
 # Typing speed (seconds per keystroke). Increase if characters drop.
 keystroke_delay_seconds = 0.002
