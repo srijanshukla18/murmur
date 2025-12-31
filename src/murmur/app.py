@@ -26,8 +26,8 @@ class State(Enum):
 
 # macOS system sounds
 SOUNDS = {
-    "start": "/System/Library/Sounds/Funk.aiff",
-    "stop": "/System/Library/Sounds/Blow.aiff",
+    "start": "/System/Library/Sounds/Blow.aiff",
+    "stop": "/System/Library/Sounds/Funk.aiff",
     "error": "/System/Library/Sounds/Basso.aiff",
 }
 
@@ -187,8 +187,14 @@ class MurmurApp:
         if self._streaming_thread and self._streaming_thread.is_alive():
             self._streaming_thread.join(timeout=1.0)
 
-        # Get full audio for final pass (as numpy)
-        full_audio = self.streaming_recorder.stop(as_numpy=True)
+        # Get audio for final pass
+        if self.config.batch_mode:
+            # In batch mode, we only want the un-pruned remainder in the RingBuffer
+            full_audio = self.streaming_recorder.get_audio_window()
+            self.streaming_recorder.stop() # Shutdown stream and clear history
+        else:
+            # Original mode: transcribe everything for total session consistency
+            full_audio = self.streaming_recorder.stop(as_numpy=True)
 
         if len(full_audio) > self._min_audio_samples:
             # Run final transcription on full audio

@@ -120,9 +120,9 @@ uv run murmur
 ### Workflow
 
 1. Focus any text field (terminal, browser, editor)
-2. **Tap Right Option (⌥)** — recording starts, you hear "Funk"
+2. **Tap Right Option (⌥)** — recording starts, you hear "Blow"
 3. Speak — text appears live as you talk
-4. **Tap Right Option (⌥)** — final pass runs, you hear "Blow"
+4. **Tap Right Option (⌥)** — final pass runs, you hear "Funk"
 
 ## Configuration
 

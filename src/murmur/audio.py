@@ -111,7 +111,7 @@ class VAD:
 
     def reset(self) -> None:
         """Reset VAD state."""
-        self._last_speech_time = 0.0
+        self._last_speech_time = time.time()
         self._is_speaking = False
 
     @property
