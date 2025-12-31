@@ -247,11 +247,12 @@ class StreamingTranscriber:
         # Remove bracket artifacts
         text = re.sub(r"\[.*?\]", "", text)
 
-        # Remove hallucinations
+        # Remove ALL parenthetical content (sound descriptions like "(footsteps)", "(music)", etc.)
+        text = re.sub(r"\(.*?\)", "", text)
+
+        # Remove common hallucinations
         hallucinations = [
-            "(music)", "(Music)", "[Music]", "(silence)", "(Silence)",
             "Thank you.", "Thanks for watching!", "Subscribe",
-            "[BLANK_AUDIO]", "(BLANK_AUDIO)",
         ]
         for h in hallucinations:
             text = text.replace(h, "")
