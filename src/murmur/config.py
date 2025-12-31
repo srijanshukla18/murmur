@@ -33,6 +33,7 @@ class Config:
     use_initial_prompt: bool = True
     consume_audio_on_commit: bool = True
     batch_mode: bool = False
+    batch_silence_threshold_ms: int = 500
 
     max_updates_per_sec: int = 4
     max_backspace_chars: int = 30
@@ -93,6 +94,8 @@ class Config:
             config.consume_audio_on_commit = bool(streaming_config["consume_audio_on_commit"])
         if "batch_mode" in streaming_config:
             config.batch_mode = bool(streaming_config["batch_mode"])
+        if "batch_silence_threshold_ms" in streaming_config:
+            config.batch_silence_threshold_ms = int(streaming_config["batch_silence_threshold_ms"])
 
         if "max_updates_per_sec" in injector_config:
             config.max_updates_per_sec = int(injector_config["max_updates_per_sec"])

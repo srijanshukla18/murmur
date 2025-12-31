@@ -30,6 +30,10 @@ buffer_seconds = 20.0
 # false = "Live" style. Types as you speak. Faster, but might backspace/correct.
 batch_mode = true
 
+# [Batch Mode Only] How long to wait for silence before transcribing (ms).
+# Lower = faster response, higher = more time to breathe between words.
+batch_silence_threshold_ms = 500
+
 # Window length used for each inference (seconds).
 # If live text stalls after short pauses, increase this (12-20).
 audio_window_seconds = 10.0

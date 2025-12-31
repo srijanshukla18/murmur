@@ -223,11 +223,12 @@ class MurmurApp:
             now = time.time()
 
             # Check if it's time for inference
-            if now - last_inference >= self.config.inference_interval_seconds:
-                # Run inference if:
-                # 1. User is speaking (VAD active)
-                # 2. OR there is text waiting to be committed (to catch ends of sentences)
-                # 3. OR the buffer is getting full (cleanup)
+            # Check if it's time for inference
+            # We check MUCH faster in batch mode (0.2s) because we only run the GPU
+            # when silence hit, so the CPU cost remains low.
+            interval = 0.2 if self.config.batch_mode else self.config.inference_interval_seconds
+            
+            if now - last_inference >= interval:
                 is_speaking = self.streaming_recorder.is_speech_active()
                 has_pending = self.streaming_transcriber.pending_text != ""
                 buffer_dur = self.streaming_recorder.buffer_duration
@@ -236,10 +237,10 @@ class MurmurApp:
                 should_run = False
                 if self.config.batch_mode:
                     # In batch mode, we ONLY run if:
-                    # 1. We are silent long enough (end of sentence)
+                    # 1. We are silent long enough (using dedicated threshold)
                     # 2. OR buffer is getting full (forced flush)
-                    # 3. OR pending text waiting to commit
-                    if silence >= (self.config.silence_commit_ms / 1000.0):
+                    # 3. OR pending text exists and user stopped speaking
+                    if silence >= (self.config.batch_silence_threshold_ms / 1000.0):
                         should_run = True
                     elif buffer_dur >= (self.config.buffer_seconds * 0.9):
                         should_run = True
