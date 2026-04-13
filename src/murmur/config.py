@@ -10,6 +10,16 @@ except ImportError:
     import tomli as tomllib
 
 
+# Valid whisper model names (prevents path traversal)
+VALID_MODELS = frozenset([
+    "tiny", "tiny.en",
+    "base", "base.en",
+    "small", "small.en",
+    "medium", "medium.en",
+    "large", "large-v1", "large-v2", "large-v3",
+])
+
+
 @dataclass
 class Config:
     """Murmur configuration."""
@@ -58,7 +68,10 @@ class Config:
         if "hotkey" in murmur_config:
             config.hotkey = cls._normalize_hotkey(murmur_config["hotkey"])
         if "model" in murmur_config:
-            config.model = murmur_config["model"]
+            model_name = murmur_config["model"]
+            if model_name not in VALID_MODELS:
+                raise ValueError(f"Invalid model '{model_name}'. Valid: {sorted(VALID_MODELS)}")
+            config.model = model_name
         if "sound" in murmur_config:
             config.sound = murmur_config["sound"]
         if "toggle_debounce_seconds" in murmur_config:
@@ -110,6 +123,8 @@ class Config:
         if env_hotkey := os.environ.get("MURMUR_HOTKEY"):
             config.hotkey = cls._normalize_hotkey(env_hotkey)
         if env_model := os.environ.get("MURMUR_MODEL"):
+            if env_model not in VALID_MODELS:
+                raise ValueError(f"Invalid MURMUR_MODEL '{env_model}'. Valid: {sorted(VALID_MODELS)}")
             config.model = env_model
         if env_sound := os.environ.get("MURMUR_SOUND"):
             config.sound = env_sound.lower() not in ("false", "0", "no")
